@@ -1,0 +1,9 @@
+.DS_Store
+.env
+.idea/
+.vscode/
+*.iml
+target/
+benchmark-results/
+data/
+k8s/secret.yaml

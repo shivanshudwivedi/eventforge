@@ -1,0 +1,106 @@
+spring:
+  application:
+    name: eventforge
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/eventforge}
+    username: ${DATABASE_USER:eventforge}
+    password: ${DATABASE_PASSWORD:eventforge}
+    hikari:
+      maximum-pool-size: ${DATABASE_POOL_SIZE:30}
+      minimum-idle: 5
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    admin:
+      fail-fast: true
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        compression.type: lz4
+        linger.ms: 5
+        batch.size: 65536
+        delivery.timeout.ms: 120000
+    consumer:
+      group-id: eventforge-workers
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: io.eventforge.event
+        spring.json.value.default.type: io.eventforge.event.EventEnvelope
+        isolation.level: read_committed
+        max.poll.records: 500
+    listener:
+      ack-mode: record
+      observation-enabled: true
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+
+eventforge:
+  api-key: ${EVENTFORGE_API_KEY:local-development-key}
+  topics:
+    events: ${EVENTFORGE_EVENTS_TOPIC:eventforge.events}
+  kafka:
+    partitions: ${EVENTFORGE_PARTITIONS:12}
+    replication-factor: ${EVENTFORGE_REPLICATION_FACTOR:1}
+  retry:
+    max-attempts: ${EVENTFORGE_RETRY_ATTEMPTS:4}
+    initial-delay-ms: ${EVENTFORGE_RETRY_INITIAL_DELAY_MS:250}
+    multiplier: ${EVENTFORGE_RETRY_MULTIPLIER:2.0}
+    max-delay-ms: ${EVENTFORGE_RETRY_MAX_DELAY_MS:5000}
+  failure-injection:
+    enabled: ${EVENTFORGE_FAILURE_INJECTION:false}
+    redis-prefix: "eventforge:failure-attempts:"
+
+management:
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  observations:
+    annotations:
+      enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:1.0}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    root: INFO
+    io.eventforge: INFO
