@@ -10,6 +10,8 @@ a dead-letter topic, and makes database side effects idempotent.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Java 21](https://img.shields.io/badge/Java-21-orange.svg)](https://adoptium.net/)
 
+**Read the implementation:** [Architecture and guarantees](docs/architecture.md) · [Operational walkthrough and runbook](docs/operations.md) · [Benchmark protocol](docs/benchmarking.md)
+
 ## Why this design
 
 Kafka delivery and a PostgreSQL commit cannot be atomically coordinated without
@@ -112,6 +114,8 @@ want to remove local PostgreSQL and Redis data.
 | `GET` | `/actuator/health/readiness` | Kubernetes readiness |
 | `GET` | `/actuator/prometheus` | Prometheus metrics |
 
+An accepted event can return 404 until processing completes. A repeated idempotency key suppresses a second business write, but does not return the original HTTP event ID. See [API contract details](docs/architecture.md#important-contract-details).
+
 All `/api/**` routes require `X-API-Key`. Actuator health and metrics are kept
 outside the authenticated API prefix so cluster probes and a metrics scraper can
 reach them; restrict actuator exposure at the network layer in production.
@@ -154,8 +158,7 @@ or partition-specific application semantics instead.
 docker compose config
 ```
 
-The integration test publishes duplicate identities and duplicate Kafka
-positions into a real PostgreSQL instance and asserts only one business write.
+The PostgreSQL integration suite checks event ID, idempotency key and Kafka position deduplication through a Spring transaction proxy. It also forces a failed business insert, proves the claim rolls back, and verifies that a corrected replay succeeds. It does not start a Kafka broker.
 
 ## Load testing
 

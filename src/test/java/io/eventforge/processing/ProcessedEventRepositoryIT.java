@@ -1,6 +1,7 @@
 package io.eventforge.processing;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.eventforge.event.EventEnvelope;
 import java.time.Instant;
@@ -8,6 +9,14 @@ import java.util.Map;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterAll;
+import javax.sql.DataSource;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -29,6 +38,7 @@ class ProcessedEventRepositoryIT {
                     .withUsername("eventforge")
                     .withPassword("eventforge");
 
+    private AnnotationConfigApplicationContext context;
     private JdbcClient jdbc;
     private ProcessedEventRepository repository;
 
@@ -40,7 +50,29 @@ class ProcessedEventRepositoryIT {
                 POSTGRES.getPassword());
         Flyway.configure().dataSource(dataSource).load().migrate();
         jdbc = JdbcClient.create(dataSource);
-        repository = new ProcessedEventRepository(jdbc, JsonMapper.builder().build());
+        context = new AnnotationConfigApplicationContext();
+        context.register(TransactionConfiguration.class);
+        context.registerBean(DataSource.class, () -> dataSource);
+        context.registerBean(JdbcClient.class, () -> jdbc);
+        context.registerBean(tools.jackson.databind.ObjectMapper.class,
+                () -> JsonMapper.builder().build());
+        context.registerBean(PlatformTransactionManager.class,
+                () -> new DataSourceTransactionManager(dataSource));
+        context.registerBean(ProcessedEventRepository.class);
+        context.refresh();
+        repository = context.getBean(ProcessedEventRepository.class);
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableTransactionManagement
+    static class TransactionConfiguration {
+    }
+
+    @AfterAll
+    void closeContext() {
+        if (context != null) {
+            context.close();
+        }
     }
 
     @BeforeEach
@@ -79,6 +111,34 @@ class ProcessedEventRepositoryIT {
                 .isEqualTo(ProcessingResult.PROCESSED);
         assertThat(repository.persist(replay, "eventforge.events", 1, 99))
                 .isEqualTo(ProcessingResult.DUPLICATE);
+    }
+
+    @Test
+    void repeatedEventIdDoesNotCreateAnotherBusinessWrite() {
+        UUID eventId = UUID.randomUUID();
+        assertThat(repository.persist(event(eventId, "identity-one"), "events", 0, 1))
+                .isEqualTo(ProcessingResult.PROCESSED);
+        assertThat(repository.persist(event(eventId, "identity-two"), "events", 0, 2))
+                .isEqualTo(ProcessingResult.DUPLICATE);
+        assertThat(jdbc.sql("SELECT count(*) FROM event_records")
+                .query(Integer.class).single()).isOne();
+    }
+
+    @Test
+    void businessWriteFailureRollsBackClaimAndAllowsCorrectedReplay() {
+        UUID eventId = UUID.randomUUID();
+        EventEnvelope valid = event(eventId, "rollback-key");
+        EventEnvelope invalid = new EventEnvelope(
+                valid.eventId(), valid.eventType(), valid.schemaVersion(), valid.occurredAt(),
+                valid.idempotencyKey(), valid.traceId(), Map.of(), Map.of());
+        assertThatThrownBy(() -> repository.persist(invalid, "events", 0, 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(jdbc.sql("SELECT count(*) FROM processed_events")
+                .query(Integer.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM event_records")
+                .query(Integer.class).single()).isZero();
+        assertThat(repository.persist(valid, "events", 0, 1))
+                .isEqualTo(ProcessingResult.PROCESSED);
     }
 
     private static EventEnvelope event(UUID id, String idempotencyKey) {
